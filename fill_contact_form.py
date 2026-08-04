@@ -34,7 +34,7 @@ if not CONTACT_URL.strip():
 # ---------------------------------------------------------------------------
 NAME = "Nihith Mekala"
 COMPANY = "Invocursor"
-EMAIL = "skaadityaroshan@gmail.com"
+EMAIL = "Sales@invocursor.com"
 PHONE = "REPLACE_ME"  # <-- put your phone number here before running
 
 MESSAGE_TEMPLATE = (
