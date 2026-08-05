@@ -15,7 +15,9 @@ but you may need to fill in or adjust a field manually if a site's form
 doesn't match any of the patterns tried.
 """
 
-from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError
+import re
+
+from playwright.sync_api import sync_playwright, Page
 
 # ---------------------------------------------------------------------------
 # CHANGE THESE FOR EACH NEW COMPANY
@@ -54,31 +56,67 @@ MESSAGE = MESSAGE_TEMPLATE.format(target_company=TARGET_COMPANY)
 # ---------------------------------------------------------------------------
 
 
-def fill_first_match(page: Page, locators: list, value: str, field_label: str) -> bool:
-    """Try a list of Playwright locators in order and fill the first visible match."""
-    for locator in locators:
+def _word_pattern(keywords: list) -> str:
+    """Build a regex matching any keyword as a whole word/phrase (not as a
+    substring of a longer word), so e.g. 'name' won't match inside
+    'companyName' or 'firstName'."""
+    return "|".join(rf"(?<![a-zA-Z]){re.escape(kw)}(?![a-zA-Z])" for kw in keywords)
+
+
+def find_field(page: Page, include_keywords: list, used: set, exclude_keywords: list = None, tag: str = "input, textarea"):
+    """Scan visible input/textarea elements once and return the first one whose
+    name/id/placeholder/aria-label/associated <label> text matches an include
+    keyword as a whole word and no exclude keyword, skipping fields already
+    claimed by another logical field."""
+    include_pattern = _word_pattern(include_keywords)
+    exclude_pattern = _word_pattern(exclude_keywords) if exclude_keywords else None
+
+    elements = page.locator(tag)
+    for i in range(elements.count()):
+        el = elements.nth(i)
         try:
-            if locator.count() > 0 and locator.first.is_visible():
-                locator.first.fill(value)
-                print(f"  [OK] Filled '{field_label}'")
-                return True
-        except PlaywrightTimeoutError:
-            continue
+            if not el.is_visible():
+                continue
+
+            name_attr = el.get_attribute("name") or ""
+            id_attr = el.get_attribute("id") or ""
+            placeholder = el.get_attribute("placeholder") or ""
+            aria_label = el.get_attribute("aria-label") or ""
+            label_text = ""
+            if id_attr:
+                label_loc = page.locator(f"label[for='{id_attr}']")
+                if label_loc.count() > 0:
+                    label_text = label_loc.first.inner_text()
+
+            identity = (name_attr, id_attr, placeholder)
+            if identity in used:
+                continue
+
+            combined = " ".join([name_attr, id_attr, placeholder, aria_label, label_text])
+            if not re.search(include_pattern, combined, re.I):
+                continue
+            if exclude_pattern and re.search(exclude_pattern, combined, re.I):
+                continue
+
+            used.add(identity)
+            return el
         except Exception:
             continue
-    print(f"  [SKIP] Could not find a field for '{field_label}' — fill it in manually.")
-    return False
+    return None
 
 
-def build_locators(page: Page, keywords: list, tag: str = "input, textarea"):
-    """Build a list of candidate locators for a field based on common keywords."""
-    locators = []
-    for kw in keywords:
-        locators.append(page.get_by_label(kw, exact=False))
-        locators.append(page.get_by_placeholder(kw, exact=False))
-        locators.append(page.locator(f"{tag}[name*='{kw}' i]"))
-        locators.append(page.locator(f"{tag}[id*='{kw}' i]"))
-    return locators
+def fill_field(page: Page, include_keywords: list, value: str, field_label: str, used: set, exclude_keywords: list = None, tag: str = "input, textarea") -> bool:
+    field = find_field(page, include_keywords, used, exclude_keywords=exclude_keywords, tag=tag)
+    if field is None:
+        print(f"  [SKIP] Could not find a field for '{field_label}' — fill it in manually.")
+        return False
+    try:
+        field.fill(value)
+        print(f"  [OK] Filled '{field_label}'")
+        return True
+    except Exception as exc:
+        print(f"  [SKIP] Found a field for '{field_label}' but couldn't fill it ({exc}) — fill it in manually.")
+        return False
 
 
 def main():
@@ -89,15 +127,25 @@ def main():
 
         print(f"Filling contact form for {TARGET_COMPANY} at {CONTACT_URL}")
 
-        fill_first_match(page, build_locators(page, ["name", "full name", "your name"]), NAME, "Name")
-        fill_first_match(page, build_locators(page, ["company", "organization", "business"]), COMPANY, "Company")
-        fill_first_match(page, build_locators(page, ["email"]), EMAIL, "Email")
-        fill_first_match(page, build_locators(page, ["phone", "mobile", "tel"]), PHONE, "Phone")
-        fill_first_match(
+        used_fields = set()
+        fill_field(page, ["company", "organization", "organisation", "business"], COMPANY, "Company", used_fields)
+        fill_field(page, ["email"], EMAIL, "Email", used_fields)
+        fill_field(page, ["phone", "mobile", "tel"], PHONE, "Phone", used_fields)
+        fill_field(
             page,
-            build_locators(page, ["message", "comments", "how can we help", "inquiry"], tag="textarea, input"),
+            ["name", "full name", "your name"],
+            NAME,
+            "Name",
+            used_fields,
+            exclude_keywords=["company", "organization", "organisation", "business", "email", "phone"],
+        )
+        fill_field(
+            page,
+            ["message", "comments", "how can we help", "inquiry", "enquiry"],
             MESSAGE,
             "Message",
+            used_fields,
+            tag="textarea, input",
         )
 
         print("\nForm filled. Review it in the browser window.")
