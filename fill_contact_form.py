@@ -122,37 +122,38 @@ def fill_field(page: Page, include_keywords: list, value: str, field_label: str,
 def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
-        page = browser.new_page()
-        page.goto(CONTACT_URL)
+        try:
+            page = browser.new_page()
+            page.goto(CONTACT_URL)
 
-        print(f"Filling contact form for {TARGET_COMPANY} at {CONTACT_URL}")
+            print(f"Filling contact form for {TARGET_COMPANY} at {CONTACT_URL}")
 
-        used_fields = set()
-        fill_field(page, ["company", "organization", "organisation", "business"], COMPANY, "Company", used_fields)
-        fill_field(page, ["email"], EMAIL, "Email", used_fields)
-        fill_field(page, ["phone", "mobile", "tel"], PHONE, "Phone", used_fields)
-        fill_field(
-            page,
-            ["name", "full name", "your name"],
-            NAME,
-            "Name",
-            used_fields,
-            exclude_keywords=["company", "organization", "organisation", "business", "email", "phone"],
-        )
-        fill_field(
-            page,
-            ["message", "comments", "how can we help", "inquiry", "enquiry"],
-            MESSAGE,
-            "Message",
-            used_fields,
-            tag="textarea, input",
-        )
+            used_fields = set()
+            fill_field(page, ["company", "organization", "organisation", "business"], COMPANY, "Company", used_fields)
+            fill_field(page, ["email"], EMAIL, "Email", used_fields)
+            fill_field(page, ["phone", "mobile", "tel"], PHONE, "Phone", used_fields)
+            fill_field(
+                page,
+                ["name", "full name", "your name"],
+                NAME,
+                "Name",
+                used_fields,
+                exclude_keywords=["company", "organization", "organisation", "business", "email", "phone"],
+            )
+            fill_field(
+                page,
+                ["message", "comments", "how can we help", "inquiry", "enquiry"],
+                MESSAGE,
+                "Message",
+                used_fields,
+                tag="textarea, input",
+            )
 
-        print("\nForm filled. Review it in the browser window.")
-        print("This script will NOT click Submit — submit it yourself once you're happy with it.")
-        input("Press Enter here once you're done (this will close the browser)... ")
-
-        browser.close()
+            print("\nForm filled. Review it in the browser window.")
+            print("This script will NOT click Submit — submit it yourself once you're happy with it.")
+            input("Press Enter here once you're done (this will close the browser)... ")
+        finally:
+            browser.close()
 
 
 if __name__ == "__main__":
