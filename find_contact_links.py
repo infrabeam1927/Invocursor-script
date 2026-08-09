@@ -9,9 +9,11 @@ Input:
     a header containing "company"/"name" and prefers those if present.
 
 Output:
-    An Excel workbook (default: "contact_link_matches.xlsx") with one row
-    per matched link: Company, Website, Matched Link, Matched Keyword,
-    Confidence, Status.
+    An Excel workbook named "contact_link_matches_<YYYYMMDD_HHMMSS>.xlsx"
+    with one row per company: Company, Website, Status, then a Match N Link /
+    Match N Keyword / Match N Confidence triplet for each matched link,
+    ordered high confidence first. Rows are sorted by each company's best
+    confidence (high, then medium, then no match/error).
 
 Can also be used as a library for a single URL or a list of URLs:
 
@@ -24,6 +26,7 @@ Usage:
 
 import re
 import time
+from datetime import datetime
 from urllib.parse import urljoin, urlparse, unquote
 
 import pandas as pd
@@ -34,7 +37,7 @@ from bs4 import BeautifulSoup
 # CONFIG
 # ---------------------------------------------------------------------------
 INPUT_FILE = "Outreach tracker.xlsx"
-OUTPUT_FILE = "contact_link_matches.xlsx"
+OUTPUT_FILE_PREFIX = "contact_link_matches"
 FALLBACK_WEBSITE_COLUMN_INDEX = 5  # column F, used if no "website"/"url" header is found
 
 REQUEST_TIMEOUT_SECONDS = 10
@@ -46,23 +49,22 @@ USER_AGENT = (
 )
 HEADERS = {"User-Agent": USER_AGENT}
 
-# Keywords matched against the link's URL path and visible text.
-# "Exact" keywords are page types that are unambiguously contact-related.
-# "Fallback" keywords (e.g. "about") sometimes hold contact info but are a
-# much weaker signal, hence the lower confidence tier.
-EXACT_KEYWORDS = [
+# Keywords matched against the link's URL path and visible text. Only terms
+# that point at an actual contact-style page are considered — no generic
+# fallback pages like "about". High-confidence keywords name a contact/
+# outreach page specifically; medium-confidence keywords are broader terms
+# that often lead to one.
+HIGH_CONFIDENCE_KEYWORDS = [
     "contact", "contact us", "contact-us", "contactus",
     "get in touch", "get-in-touch", "getintouch",
     "reach us", "reach-us", "reach out", "reach-out", "reachout",
-    "support", "help",
-    "connect",
     "book a call", "book-a-call",
     "book a demo", "book-a-demo",
     "request a demo", "request-a-demo",
     "talk to us", "talk-to-us",
     "say hello", "say-hello",
 ]
-FALLBACK_KEYWORDS = ["about", "about us", "about-us", "aboutus"]
+MEDIUM_CONFIDENCE_KEYWORDS = ["support", "help", "connect"]
 
 # Link schemes that don't point at a fetchable page and should be skipped.
 SKIPPED_HREF_PREFIXES = ("#", "javascript:", "mailto:", "tel:")
@@ -90,21 +92,23 @@ def _compile_patterns(keywords: list) -> list:
     return patterns
 
 
-_EXACT_PATTERNS = _compile_patterns(EXACT_KEYWORDS)
-_FALLBACK_PATTERNS = _compile_patterns(FALLBACK_KEYWORDS)
+_HIGH_PATTERNS = _compile_patterns(HIGH_CONFIDENCE_KEYWORDS)
+_MEDIUM_PATTERNS = _compile_patterns(MEDIUM_CONFIDENCE_KEYWORDS)
+
+CONFIDENCE_RANK = {"high confidence": 0, "medium confidence": 1}
 
 
 def match_keyword(path: str, link_text: str):
     """Return (matched_keyword, confidence) for a link's path/text, checking
-    exact keywords first and falling back to lower-confidence ones. Returns
-    (None, None) if nothing matches."""
+    high-confidence keywords first and falling back to medium-confidence
+    ones. Returns (None, None) if nothing matches."""
     fields = [_normalize(unquote(path)), _normalize(link_text)]
-    for kw, pattern in _EXACT_PATTERNS:
+    for kw, pattern in _HIGH_PATTERNS:
         if any(pattern.search(field) for field in fields):
-            return kw, "exact match"
-    for kw, pattern in _FALLBACK_PATTERNS:
+            return kw, "high confidence"
+    for kw, pattern in _MEDIUM_PATTERNS:
         if any(pattern.search(field) for field in fields):
-            return kw, "fallback match"
+            return kw, "medium confidence"
     return None, None
 
 
@@ -145,17 +149,20 @@ def find_contact_links(url: str, session: requests.Session = None, timeout: int 
         keyword, confidence = match_keyword(urlparse(link_url).path, link_text)
         if keyword is None:
             continue
-        rank = 0 if confidence == "exact match" else 1
+        rank = CONFIDENCE_RANK[confidence]
         if link_url not in best_by_url or rank < best_by_url[link_url][2]:
             best_by_url[link_url] = (keyword, confidence, rank)
 
     if not best_by_url:
         return {"status": "no_match", "detail": "No contact-style link found.", "matches": []}
 
-    matches = [
-        {"url": link_url, "keyword": keyword, "confidence": confidence}
-        for link_url, (keyword, confidence, _rank) in best_by_url.items()
-    ]
+    matches = sorted(
+        (
+            {"url": link_url, "keyword": keyword, "confidence": confidence}
+            for link_url, (keyword, confidence, _rank) in best_by_url.items()
+        ),
+        key=lambda m: CONFIDENCE_RANK[m["confidence"]],
+    )
     return {"status": "ok", "detail": "", "matches": matches}
 
 
@@ -197,38 +204,53 @@ def load_records(path: str) -> list:
 
 
 def check_websites(records: list, delay: float = DELAY_BETWEEN_REQUESTS_SECONDS) -> list:
-    """Run find_contact_links across a batch of (company, website) records
-    and flatten the results into one row per matched link (or one status
-    row for sites with no match/error)."""
+    """Run find_contact_links across a batch of (company, website) records,
+    one entry per company. Each entry's matches are already sorted best
+    confidence first."""
     session = requests.Session()
-    rows = []
+    results = []
     for i, (company, website) in enumerate(records, start=1):
         print(f"[{i}/{len(records)}] Checking {company or website} -> {website}")
         result = find_contact_links(website, session=session)
-
-        if not result["matches"]:
-            rows.append({
-                "Company": company,
-                "Website": website,
-                "Matched Link": "",
-                "Matched Keyword": "",
-                "Confidence": "",
-                "Status": result["status"] if result["status"] != "ok" else "no_match",
-            })
-        else:
-            for match in result["matches"]:
-                rows.append({
-                    "Company": company,
-                    "Website": website,
-                    "Matched Link": match["url"],
-                    "Matched Keyword": match["keyword"],
-                    "Confidence": match["confidence"],
-                    "Status": "ok",
-                })
-
+        results.append({
+            "company": company,
+            "website": website,
+            "status": result["status"],
+            "matches": result["matches"],
+        })
         if i < len(records):
             time.sleep(delay)
-    return rows
+    return results
+
+
+def _best_confidence_rank(matches: list) -> int:
+    if not matches:
+        return len(CONFIDENCE_RANK)  # sorts after every real match
+    return min(CONFIDENCE_RANK[m["confidence"]] for m in matches)
+
+
+def build_output_rows(results: list) -> pd.DataFrame:
+    """Consolidate per-company results into one row per company, with a
+    Match N Link/Keyword/Confidence triplet per matched link (best
+    confidence first), sorted so companies with the strongest match come
+    first."""
+    ordered = sorted(results, key=lambda r: _best_confidence_rank(r["matches"]))
+    max_matches = max((len(r["matches"]) for r in ordered), default=0)
+
+    columns = ["Company", "Website", "Status"]
+    for i in range(1, max_matches + 1):
+        columns += [f"Match {i} Link", f"Match {i} Keyword", f"Match {i} Confidence"]
+
+    rows = []
+    for r in ordered:
+        row = {"Company": r["company"], "Website": r["website"], "Status": r["status"]}
+        for i, match in enumerate(r["matches"], start=1):
+            row[f"Match {i} Link"] = match["url"]
+            row[f"Match {i} Keyword"] = match["keyword"]
+            row[f"Match {i} Confidence"] = match["confidence"]
+        rows.append(row)
+
+    return pd.DataFrame(rows, columns=columns)
 
 
 def main():
@@ -236,13 +258,13 @@ def main():
     if not records:
         raise ValueError(f"No usable website URLs found in '{INPUT_FILE}'.")
 
-    rows = check_websites(records)
+    results = check_websites(records)
+    out_df = build_output_rows(results)
 
-    out_df = pd.DataFrame(rows, columns=[
-        "Company", "Website", "Matched Link", "Matched Keyword", "Confidence", "Status",
-    ])
-    out_df.to_excel(OUTPUT_FILE, index=False)
-    print(f"\nWrote {len(out_df)} rows to {OUTPUT_FILE}")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = f"{OUTPUT_FILE_PREFIX}_{timestamp}.xlsx"
+    out_df.to_excel(output_file, index=False)
+    print(f"\nWrote {len(out_df)} rows to {output_file}")
 
 
 if __name__ == "__main__":
