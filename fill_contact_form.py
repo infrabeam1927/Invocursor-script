@@ -13,6 +13,11 @@ Note: contact forms vary widely across sites. This script tries a set of
 common field patterns (by label, placeholder, name, and id) for each field,
 but you may need to fill in or adjust a field manually if a site's form
 doesn't match any of the patterns tried.
+
+Can also be imported by another script to fill many companies' forms in one
+browser session — see fill_contact_form_page() (fills an existing Playwright
+page, no browser lifecycle or review pause) and fill_one_company() (full
+standalone single-company flow, used by main() below).
 """
 
 import re
@@ -20,16 +25,11 @@ import re
 from playwright.sync_api import sync_playwright, Page
 
 # ---------------------------------------------------------------------------
-# CHANGE THESE FOR EACH NEW COMPANY
+# CHANGE THESE FOR EACH NEW COMPANY (only used when running this file directly)
 # ---------------------------------------------------------------------------
 TARGET_COMPANY = ""   # e.g. "Acme Property Group"
 CONTACT_URL = ""      # e.g. "https://www.acme.com/contact"
 # ---------------------------------------------------------------------------
-
-if not TARGET_COMPANY.strip():
-    raise ValueError("TARGET_COMPANY must be set before running this script.")
-if not CONTACT_URL.strip():
-    raise ValueError("CONTACT_URL must be set before running this script.")
 
 # ---------------------------------------------------------------------------
 # FIXED DETAILS (same every run)
@@ -52,7 +52,9 @@ MESSAGE_TEMPLATE = (
     "'how do I…' walls every day. Happy to share a live demo."
 )
 
-MESSAGE = MESSAGE_TEMPLATE.format(target_company=TARGET_COMPANY)
+
+def build_message(target_company: str) -> str:
+    return MESSAGE_TEMPLATE.format(target_company=target_company)
 # ---------------------------------------------------------------------------
 
 
@@ -119,41 +121,63 @@ def fill_field(page: Page, include_keywords: list, value: str, field_label: str,
         return False
 
 
-def main():
+def fill_contact_form_page(page: Page, target_company: str, contact_url: str) -> None:
+    """Navigate `page` to contact_url and fill in Invocursor's outreach
+    details, with the message personalized for target_company. Does not
+    manage the browser's lifecycle or wait for a review pause — see
+    fill_one_company() for the standalone single-company flow that does."""
+    if not target_company or not target_company.strip():
+        raise ValueError("target_company must not be blank.")
+    if not contact_url or not contact_url.strip():
+        raise ValueError("contact_url must not be blank.")
+
+    page.goto(contact_url)
+    print(f"Filling contact form for {target_company} at {contact_url}")
+
+    used_fields = set()
+    fill_field(page, ["company", "organization", "organisation", "business"], COMPANY, "Company", used_fields)
+    fill_field(page, ["email"], EMAIL, "Email", used_fields)
+    fill_field(page, ["phone", "mobile", "tel"], PHONE, "Phone", used_fields)
+    fill_field(
+        page,
+        ["name", "full name", "your name"],
+        NAME,
+        "Name",
+        used_fields,
+        exclude_keywords=["company", "organization", "organisation", "business", "email", "phone"],
+    )
+    fill_field(
+        page,
+        ["message", "comments", "how can we help", "inquiry", "enquiry"],
+        build_message(target_company),
+        "Message",
+        used_fields,
+        tag="textarea, input",
+    )
+
+
+def fill_one_company(target_company: str, contact_url: str) -> None:
+    """Standalone single-company flow: launches its own browser, fills the
+    form, and waits for the user to review/submit before closing."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         try:
             page = browser.new_page()
-            page.goto(CONTACT_URL)
-
-            print(f"Filling contact form for {TARGET_COMPANY} at {CONTACT_URL}")
-
-            used_fields = set()
-            fill_field(page, ["company", "organization", "organisation", "business"], COMPANY, "Company", used_fields)
-            fill_field(page, ["email"], EMAIL, "Email", used_fields)
-            fill_field(page, ["phone", "mobile", "tel"], PHONE, "Phone", used_fields)
-            fill_field(
-                page,
-                ["name", "full name", "your name"],
-                NAME,
-                "Name",
-                used_fields,
-                exclude_keywords=["company", "organization", "organisation", "business", "email", "phone"],
-            )
-            fill_field(
-                page,
-                ["message", "comments", "how can we help", "inquiry", "enquiry"],
-                MESSAGE,
-                "Message",
-                used_fields,
-                tag="textarea, input",
-            )
+            fill_contact_form_page(page, target_company, contact_url)
 
             print("\nForm filled. Review it in the browser window.")
             print("This script will NOT click Submit — submit it yourself once you're happy with it.")
             input("Press Enter here once you're done (this will close the browser)... ")
         finally:
             browser.close()
+
+
+def main():
+    if not TARGET_COMPANY.strip():
+        raise ValueError("TARGET_COMPANY must be set before running this script.")
+    if not CONTACT_URL.strip():
+        raise ValueError("CONTACT_URL must be set before running this script.")
+    fill_one_company(TARGET_COMPANY, CONTACT_URL)
 
 
 if __name__ == "__main__":
