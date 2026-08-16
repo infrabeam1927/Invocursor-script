@@ -103,6 +103,12 @@ Companies that don't qualify are listed with the specific reason (security
 risk, no link found, or only a low-confidence link) — nothing is silently
 dropped.
 
+Progress is saved to `outreach_progress.json` after every company (reviewed
+or errored), scoped to the exact pair of report files used. Run `main.py`
+again against the same reports and it offers to resume where you left off
+instead of starting over; run it against newer reports and it starts fresh
+automatically.
+
 ```powershell
 python main.py
 ```

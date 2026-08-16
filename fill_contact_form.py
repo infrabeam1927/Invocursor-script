@@ -37,7 +37,7 @@ CONTACT_URL = ""      # e.g. "https://www.acme.com/contact"
 NAME = "Nihith Mekala"
 COMPANY = "Invocursor"
 EMAIL = "Sales@invocursor.com"
-PHONE = "REPLACE_ME"  # <-- put your phone number here before running
+PHONE = "(647) 735-1001"
 
 MESSAGE_TEMPLATE = (
     "Invocursor is an AI layer that lives inside vertical SaaS products, sees "

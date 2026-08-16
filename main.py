@@ -19,11 +19,18 @@ Companies that fail either bar (risky site, no contact page found, or only
 a lower-confidence match) are skipped and listed in the summary — they're
 not silently dropped.
 
+Progress is saved to PROGRESS_FILE after every company (reviewed or
+errored), scoped to the exact pair of report files used. Re-running against
+the same reports offers to resume where you left off instead of starting
+the ~216-company review over from the top; running against newer reports
+starts fresh automatically.
+
 Usage:
     python main.py
 """
 
 import glob
+import json
 import os
 
 import pandas as pd
@@ -38,6 +45,8 @@ CONTACT_LINKS_GLOB = "contact_link_matches_[0-9]*.xlsx"
 
 ACCEPTABLE_RISK_LEVELS = {"Clean"}
 ACCEPTABLE_MATCH_CONFIDENCE = {"high confidence"}
+
+PROGRESS_FILE = "outreach_progress.json"
 
 
 def _latest_file(pattern: str) -> str:
@@ -98,6 +107,32 @@ def load_qualified_companies(security_report_path: str, contact_links_path: str)
     return qualified, excluded
 
 
+def load_progress(security_report_path: str, contact_links_path: str) -> set:
+    """Returns the set of company names already completed in a previous run
+    against this exact pair of report files, or an empty set if there's no
+    matching progress file."""
+    if not os.path.exists(PROGRESS_FILE):
+        return set()
+    try:
+        with open(PROGRESS_FILE, "r") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+    if data.get("security_report") != security_report_path or data.get("contact_links_report") != contact_links_path:
+        return set()  # progress is from a different pair of reports — doesn't apply here
+    return set(data.get("completed_companies", []))
+
+
+def save_progress(security_report_path: str, contact_links_path: str, completed_companies: set) -> None:
+    with open(PROGRESS_FILE, "w") as f:
+        json.dump({
+            "security_report": security_report_path,
+            "contact_links_report": contact_links_path,
+            "completed_companies": sorted(completed_companies),
+        }, f, indent=2)
+
+
 def main():
     security_report_path = _latest_file(SECURITY_REPORT_GLOB)
     contact_links_path = _latest_file(CONTACT_LINKS_GLOB)
@@ -117,6 +152,31 @@ def main():
     if not qualified:
         print("No qualifying companies — nothing to do.")
         return
+
+    completed = load_progress(security_report_path, contact_links_path)
+    remaining = [c for c in qualified if c[0] not in completed]
+
+    if completed and remaining != qualified:
+        already_done = len(qualified) - len(remaining)
+        answer = input(
+            f"Found previous progress against these reports: {already_done}/{len(qualified)} "
+            f"companies already reviewed. Resume and skip those? (Y/n): "
+        ).strip().lower()
+        if answer in ("", "y", "yes"):
+            qualified = remaining
+        else:
+            completed = set()  # starting over — previous progress will be overwritten as we go
+
+    if not qualified:
+        answer = input(
+            "All qualifying companies have already been reviewed against these reports. "
+            "Reset progress and start over? (y/N): "
+        ).strip().lower()
+        if answer not in ("y", "yes"):
+            print("Nothing to do.")
+            return
+        completed = set()
+        qualified, _ = load_qualified_companies(security_report_path, contact_links_path)
 
     processed, errored, stopped_early = 0, 0, False
     with sync_playwright() as p:
@@ -140,6 +200,8 @@ def main():
                     print(f"  [ERROR] Skipping {company}: {exc}")
                 finally:
                     page.close()
+                completed.add(company)
+                save_progress(security_report_path, contact_links_path, completed)
                 if stopped_early:
                     break
         finally:
