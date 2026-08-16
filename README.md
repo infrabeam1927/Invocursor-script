@@ -16,14 +16,14 @@ security_check.py  ───────►  security_report_<timestamp>.xlsx
 find_contact_links.py  ───►  contact_link_matches_<timestamp>.xlsx
         │                           (best contact-page link per company)
         ▼
-run_outreach_pipeline.py  ─►  opens each qualifying company's contact
+main.py  ──────────────────►  opens each qualifying company's contact
                                page and fills it in for you to review
                                and submit manually
 ```
 
 `security_check.py` and `find_contact_links.py` can be run in either order
-(or independently) — `run_outreach_pipeline.py` just needs both of their
-latest output files to exist before it runs.
+(or independently) — `main.py` just needs both of their latest output files
+to exist before it runs.
 
 ## Setup
 
@@ -87,9 +87,10 @@ matched link spread across `Match 1`, `Match 2`, ... column triplets
 (Link/Keyword/Confidence), best confidence first; companies sorted by their
 best match.
 
-### `run_outreach_pipeline.py`
-Reads the **most recently generated** report from each of the two scripts
-above (does not re-run them) and filters to companies that are both:
+### `main.py`
+The main pipeline entry point. Reads the **most recently generated** report
+from each of the two scripts above (does not re-run them) and filters to
+companies that are both:
 
 - **Acceptable**: `Clean` risk level in the security report
 - **Doable**: a high-confidence `Match 1` contact link in the link report
@@ -103,13 +104,12 @@ risk, no link found, or only a low-confidence link) — nothing is silently
 dropped.
 
 ```powershell
-python run_outreach_pipeline.py
+python main.py
 ```
 
 ### `fill_contact_form.py`
 Fills a single company's contact form. Can be run standalone for a one-off
-company, or imported by `run_outreach_pipeline.py` to do the same thing in
-bulk.
+company, or imported by `main.py` to do the same thing in bulk.
 
 ```powershell
 python fill_contact_form.py
