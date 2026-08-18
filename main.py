@@ -25,6 +25,11 @@ the same reports offers to resume where you left off instead of starting
 the ~216-company review over from the top; running against newer reports
 starts fresh automatically.
 
+Every company handled (reviewed or errored) also gets a row in
+OUTPUT_TRACKER_FILE — a single Excel file in the "Output tracker" folder
+that keeps accumulating across every run (not one file per run), showing
+which companies were handled, when, and with what outcome.
+
 Usage:
     python main.py
 """
@@ -32,6 +37,7 @@ Usage:
 import glob
 import json
 import os
+from datetime import datetime
 
 import pandas as pd
 from playwright.sync_api import sync_playwright
@@ -48,6 +54,15 @@ ACCEPTABLE_MATCH_CONFIDENCE = {"high confidence"}
 
 PROGRESS_FILE = "outreach_progress.json"
 
+# Single file that accumulates a row per company across every run — not
+# timestamped, always the same path, updated (not replaced) each time.
+OUTPUT_TRACKER_DIR = "Output tracker"
+OUTPUT_TRACKER_FILE = os.path.join(OUTPUT_TRACKER_DIR, "Output tracker.xlsx")
+OUTPUT_TRACKER_COLUMNS = [
+    "Company", "Website", "Contact URL", "Outcome",
+    "Security Risk", "Match Confidence", "Last Handled",
+]
+
 
 def _latest_file(pattern: str) -> str:
     matches = glob.glob(pattern)
@@ -61,7 +76,7 @@ def _latest_file(pattern: str) -> str:
 
 def load_qualified_companies(security_report_path: str, contact_links_path: str):
     """Returns (qualified, excluded):
-        qualified: list of (company, contact_url, website) tuples
+        qualified: list of (company, contact_url, website, risk, match_confidence) tuples
         excluded: dict of {company: reason_str} for everything left out
     """
     security_df = pd.read_excel(security_report_path)
@@ -102,7 +117,7 @@ def load_qualified_companies(security_report_path: str, contact_links_path: str)
             continue
 
         website = link_row.get("Website", "")
-        qualified.append((company, str(match_link).strip(), website))
+        qualified.append((company, str(match_link).strip(), website, risk, match_confidence))
 
     return qualified, excluded
 
@@ -131,6 +146,36 @@ def save_progress(security_report_path: str, contact_links_path: str, completed_
             "contact_links_report": contact_links_path,
             "completed_companies": sorted(completed_companies),
         }, f, indent=2)
+
+
+def record_output(company: str, website: str, contact_url: str, outcome: str, risk: str, match_confidence: str) -> None:
+    """Upserts one company's row into the single, ever-growing
+    OUTPUT_TRACKER_FILE — creates the file/folder on first use, replaces the
+    row if this company was already in it (e.g. re-handled after a reset),
+    and rewrites the file so it's always current at the end of every run."""
+    os.makedirs(OUTPUT_TRACKER_DIR, exist_ok=True)
+
+    if os.path.exists(OUTPUT_TRACKER_FILE):
+        try:
+            df = pd.read_excel(OUTPUT_TRACKER_FILE)
+        except Exception:
+            df = pd.DataFrame(columns=OUTPUT_TRACKER_COLUMNS)
+    else:
+        df = pd.DataFrame(columns=OUTPUT_TRACKER_COLUMNS)
+
+    df = df[df["Company"] != company] if "Company" in df.columns else df
+    new_row = pd.DataFrame([{
+        "Company": company,
+        "Website": website,
+        "Contact URL": contact_url,
+        "Outcome": outcome,
+        "Security Risk": risk,
+        "Match Confidence": match_confidence,
+        "Last Handled": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }])
+    df = pd.concat([df, new_row], ignore_index=True)[OUTPUT_TRACKER_COLUMNS]
+    df = df.sort_values("Last Handled", ascending=False, kind="stable")
+    df.to_excel(OUTPUT_TRACKER_FILE, index=False)
 
 
 def main():
@@ -182,9 +227,10 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         try:
-            for i, (company, contact_url, website) in enumerate(qualified, start=1):
+            for i, (company, contact_url, website, risk, match_confidence) in enumerate(qualified, start=1):
                 print(f"\n=== [{i}/{len(qualified)}] {company} ({website}) ===")
                 page = browser.new_page()
+                outcome = "Reviewed"
                 try:
                     fill_contact_form_page(page, company, contact_url)
                     print("Form filled. Review it in the browser window.")
@@ -197,11 +243,13 @@ def main():
                         stopped_early = True
                 except Exception as exc:
                     errored += 1
+                    outcome = "Errored"
                     print(f"  [ERROR] Skipping {company}: {exc}")
                 finally:
                     page.close()
                 completed.add(company)
                 save_progress(security_report_path, contact_links_path, completed)
+                record_output(company, website, contact_url, outcome, risk, match_confidence)
                 if stopped_early:
                     break
         finally:
