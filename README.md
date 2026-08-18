@@ -109,6 +109,15 @@ again against the same reports and it offers to resume where you left off
 instead of starting over; run it against newer reports and it starts fresh
 automatically.
 
+Every company handled (reviewed or errored) also gets a row written to
+`Output tracker/Output tracker.xlsx` — Company, Website, Contact URL,
+Outcome, Security Risk, Match Confidence, and when it was last handled.
+This is a single file that keeps accumulating across every run (not a new
+timestamped file each time, unlike the security/contact-link reports):
+re-handling a company updates its existing row instead of adding a
+duplicate, so it always reflects the latest state of every company that's
+ever gone through the pipeline.
+
 ```powershell
 python main.py
 ```
